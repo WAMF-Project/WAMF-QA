@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WAMF-QA · Test feed</title>
+<style>
+  body { font: 16px system-ui, sans-serif; background: #f3f6f5; color: #19342b; margin: 0; }
+  main { max-width: 540px; margin: 8vh auto; padding: 32px; background: white; border-radius: 14px; }
+  h1 { font-size: 1.8rem; margin: 8px 0; } p { line-height: 1.5; }
+  label { display: block; margin: 24px 0 8px; }
+  select { width: 100%; padding: 12px; font: inherit; }
+  button { font: inherit; padding: 10px 24px; margin: 18px 8px 18px 0; cursor: pointer; }
+  #start { background: #1c634b; color: white; border: 2px solid #1c634b; border-radius: 5px; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { padding: 16px; background: #edf3ef; overflow-wrap: anywhere; }
+  #error { color: #9d2920; } small { color: #52655d; }
+</style>
+<main>
+  <small>WAMF-QA / MEDIAMTX</small>
+  <h1>Test feed</h1>
+  <p>Choose a video to publish to the fixed Frigate test stream.</p>
+  <label for="video">Test video</label>
+  <select id="video" disabled><option>Loading videos…</option></select>
+  <label><input id="loop" type="checkbox"> Loop video</label>
+  <small>Loop applies when you press Start. Start replaces the current feed.</small>
+  <div><button id="start" disabled>Start</button><button id="stop">Stop</button></div>
+  <div id="status" role="status" aria-live="polite">Checking status…</div>
+  <p id="error" role="alert"></p>
+  <small>Files come from the mounted video directory. Reload to refresh the list.</small>
+</main>
+<script>
+  const video = document.querySelector('#video');
+  const start = document.querySelector('#start');
+  const stop = document.querySelector('#stop');
+  const error = document.querySelector('#error');
+  const status = document.querySelector('#status');
+  let busy = false;
+  async function api(path, data) {
+    const response = await fetch(path, data === undefined ? {cache: 'no-store'} : {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Request failed. Please retry.');
+    return result;
+  }
+  function show(state) {
+    status.textContent = state.state === 'streaming'
+      ? `Streaming · ${state.filename}${state.loop ? ' · Loop on' : ''}` : 'Stopped';
+    if (state.error) error.textContent = state.error;
+  }
+  async function action(path, data) {
+    busy = true; start.disabled = true; stop.disabled = true; error.textContent = '';
+    try { show(await api(path, data)); }
+    catch (e) { error.textContent = e.message; }
+    finally { busy = false; start.disabled = !video.value; stop.disabled = false; }
+  }
+  start.onclick = () => action('/api/start', {filename: video.value, loop: document.querySelector('#loop').checked});
+  stop.onclick = () => action('/api/stop', {});
+  async function poll() {
+    if (!busy) {
+      try { show(await api('/api/status')); }
+      catch (e) { status.textContent = 'Status unavailable'; error.textContent = e.message; }
+    }
+    setTimeout(poll, 1000);
+  }
+  async function init() {
+    try {
+      const data = await api('/api/videos');
+      video.replaceChildren();
+      for (const filename of data.files) video.add(new Option(filename, filename));
+      if (!data.files.length) video.add(new Option('No videos found', ''));
+      video.disabled = !data.files.length; start.disabled = !data.files.length;
+    } catch (e) { video.replaceChildren(new Option('Videos unavailable', '')); error.textContent = e.message; }
+    poll();
+  }
+  init();
+</script>
+</html>

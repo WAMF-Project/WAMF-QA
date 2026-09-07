@@ -27,3 +27,8 @@ This repository contains test media, expected results, validation workflows, and
 
 WAMF-QA helps ensure WAMF releases remain reliable, accurate, and predictable across future versions.
 
+
+## QA Tools
+
+* [MediaMTX Test Feed](mediamtx-test-feed/README.md) — publish local test videos to the fixed Frigate/WAMF RTSP test path using a small Dockerised UI.
+

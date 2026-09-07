@@ -1,0 +1,25 @@
+services:
+  test-feed:
+    build: .
+    ports:
+      - "127.0.0.1:${UI_PORT:-8080}:8080"
+    environment:
+      VIDEO_DIR: /videos
+      MEDIAMTX_URL: ${MEDIAMTX_URL:-rtsp://mediamtx:8554/test}
+    volumes:
+      - type: bind
+        source: ${TEST_VIDEO_DIR:?Set TEST_VIDEO_DIR to your host video directory}
+        target: /videos
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - mediamtx
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+networks:
+  mediamtx:
+    external: true
+    name: ${MEDIAMTX_NETWORK:-mediamtx}
