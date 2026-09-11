@@ -13,7 +13,8 @@
   #start { background: #1c634b; color: white; border: 2px solid #1c634b; border-radius: 5px; }
   button:disabled { opacity: .5; cursor: default; }
   #status { padding: 16px; background: #edf3ef; overflow-wrap: anywhere; }
-  #error { color: #9d2920; } small { color: #52655d; }
+  #error, #upload-status.error, #delete-status.error { color: #9d2920; } small { color: #52655d; }
+  #upload-progress { width: 80%; accent-color: #1c634b; vertical-align: middle; }
 </style>
 <main>
   <small>WAMF-QA / MEDIAMTX</small>
@@ -21,10 +22,24 @@
   <p>Choose a video to publish to the fixed Frigate test stream.</p>
   <label for="video">Test video</label>
   <select id="video" disabled><option>Loading videos…</option></select>
+  <small id="metadata" role="status">No video selected</small>
+  <div><button id="delete-video" disabled>Delete selected video</button>
+    <small id="delete-status" role="status"></small></div>
+  <form id="upload-form">
+    <label for="upload-file">Upload test video</label>
+    <input id="upload-file" type="file" accept=".mp4,.mov,.mkv" required>
+    <button id="upload" type="submit">Upload</button>
+    <div id="upload-progress-row" hidden>
+      <progress id="upload-progress" max="100" value="0" aria-label="Video upload progress"></progress>
+      <small id="upload-percent">0%</small>
+    </div>
+    <small id="upload-status" role="status" aria-live="polite"></small>
+  </form>
   <label><input id="loop" type="checkbox"> Loop video</label>
   <small>Loop applies when you press Start. Start replaces the current feed.</small>
   <div><button id="start" disabled>Start</button><button id="stop">Stop</button></div>
   <div id="status" role="status" aria-live="polite">Checking status…</div>
+  <small id="mode">Idle</small>
   <p id="error" role="alert"></p>
   <small>Files come from the mounted video directory. Reload to refresh the list.</small>
 </main>
@@ -34,6 +49,10 @@
   const stop = document.querySelector('#stop');
   const error = document.querySelector('#error');
   const status = document.querySelector('#status');
+  const metadata = document.querySelector('#metadata');
+  const deleteButton = document.querySelector('#delete-video');
+  let metadataRequest = 0;
+  let deleting = false;
   let busy = false;
   async function api(path, data) {
     const response = await fetch(path, data === undefined ? {cache: 'no-store'} : {
@@ -44,6 +63,7 @@
     return result;
   }
   function show(state) {
+    document.querySelector('#mode').textContent = state.mode || 'Idle';
     status.textContent = state.state === 'streaming'
       ? `Streaming · ${state.filename}${state.loop ? ' · Loop on' : ''}` : 'Stopped';
     if (state.error) error.textContent = state.error;
@@ -56,6 +76,90 @@
   }
   start.onclick = () => action('/api/start', {filename: video.value, loop: document.querySelector('#loop').checked});
   stop.onclick = () => action('/api/stop', {});
+  async function refreshMetadata() {
+    const requestId = ++metadataRequest;
+    const filename = video.value;
+    metadata.textContent = filename ? 'Loading metadata…' : 'No video selected';
+    if (!filename) return;
+    try {
+      const data = await api(`/api/videos/${encodeURIComponent(filename)}`);
+      if (requestId !== metadataRequest) return;
+      const resolution = data.width && data.height ? `${data.width}×${data.height}` : 'Unknown resolution';
+      metadata.textContent = `${resolution} · ${data.codec || 'Unknown codec'} · `
+        + `${data.fps ? data.fps.toFixed(2) : 'Unknown'} FPS · `
+        + `${data.duration ? data.duration.toFixed(1) + ' s' : 'Unknown duration'}`;
+    } catch (e) {
+      if (requestId === metadataRequest) metadata.textContent = e.message;
+    }
+  }
+  video.onchange = refreshMetadata;
+  deleteButton.onclick = async () => {
+    const filename = video.value;
+    if (deleting || !filename || !confirm(`Delete "${filename}"? This cannot be undone.`)) return;
+    const message = document.querySelector('#delete-status');
+    deleting = true; deleteButton.disabled = true; message.className = ''; message.textContent = '';
+    try {
+      const response = await fetch(`/api/videos/${encodeURIComponent(filename)}`, {method: 'DELETE'});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Deletion failed. Please retry.');
+      message.textContent = `Deleted ${filename}.`;
+      try { await refreshVideos(); }
+      catch (e) { throw new Error(`Video deleted, but the list could not refresh: ${e.message}`); }
+    } catch (e) { message.className = 'error'; message.textContent = e.message; }
+    finally { deleting = false; deleteButton.disabled = !video.value; }
+  };
+  const uploadProgressRow = document.querySelector('#upload-progress-row');
+  const uploadProgress = document.querySelector('#upload-progress');
+  const uploadPercent = document.querySelector('#upload-percent');
+  function setUploadProgress(percent) {
+    uploadProgress.value = percent;
+    uploadPercent.textContent = `${percent}%`;
+  }
+  function resetUploadProgress() {
+    uploadProgressRow.hidden = true;
+    setUploadProgress(0);
+  }
+  document.querySelector('#upload-file').onchange = resetUploadProgress;
+  function uploadVideo(data) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload');
+      xhr.responseType = 'json';
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          setUploadProgress(Math.min(100, Math.floor(event.loaded / event.total * 100)));
+        }
+      };
+      xhr.onload = () => {
+        const result = xhr.response;
+        if (xhr.status >= 200 && xhr.status < 300 && result && result.filename) resolve(result);
+        else reject(new Error(result?.error || 'Upload failed. Please retry.'));
+      };
+      xhr.onerror = xhr.onabort = xhr.ontimeout = () => reject(new Error('Upload failed. Please retry.'));
+      xhr.send(data);
+    });
+  }
+  document.querySelector('#upload-form').onsubmit = async (event) => {
+    event.preventDefault();
+    const file = document.querySelector('#upload-file');
+    const button = document.querySelector('#upload');
+    const message = document.querySelector('#upload-status');
+    if (button.disabled || !file.files.length) return;
+    const data = new FormData();
+    data.append('file', file.files[0]);
+    button.disabled = true; file.disabled = true;
+    message.className = ''; message.textContent = 'Uploading…';
+    setUploadProgress(0); uploadProgressRow.hidden = false;
+    try {
+      const result = await uploadVideo(data);
+      setUploadProgress(100);
+      message.textContent = `Uploaded ${result.filename}.`;
+      file.value = '';
+      try { await refreshVideos(result.filename); }
+      catch (e) { throw new Error(`Upload saved, but the video list could not refresh: ${e.message}`); }
+    } catch (e) { resetUploadProgress(); message.className = 'error'; message.textContent = e.message; }
+    finally { button.disabled = false; file.disabled = false; }
+  };
   async function poll() {
     if (!busy) {
       try { show(await api('/api/status')); }
@@ -63,13 +167,23 @@
     }
     setTimeout(poll, 1000);
   }
+  async function refreshVideos(selected = video.value) {
+    const data = await api('/api/videos');
+    video.replaceChildren();
+    for (const filename of data.files) {
+      const size = data.sizes?.[filename];
+      const label = Number.isFinite(size) ? `${filename} (${(size / 1000000).toFixed(1)} MB)` : filename;
+      video.add(new Option(label, filename));
+    }
+    if (!data.files.length) video.add(new Option('No videos found', ''));
+    video.value = data.files.includes(selected) ? selected : (data.files[0] || '');
+    video.disabled = !data.files.length; start.disabled = busy || !data.files.length;
+    deleteButton.disabled = deleting || !data.files.length;
+    await refreshMetadata();
+  }
   async function init() {
     try {
-      const data = await api('/api/videos');
-      video.replaceChildren();
-      for (const filename of data.files) video.add(new Option(filename, filename));
-      if (!data.files.length) video.add(new Option('No videos found', ''));
-      video.disabled = !data.files.length; start.disabled = !data.files.length;
+      await refreshVideos();
     } catch (e) { video.replaceChildren(new Option('Videos unavailable', '')); error.textContent = e.message; }
     poll();
   }

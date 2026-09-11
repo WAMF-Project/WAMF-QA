@@ -1,3 +1,4 @@
+import logging
 import signal
 
 from waitress import create_server
@@ -6,6 +7,7 @@ from .web import create_app
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
     app = create_app()
     publisher = app.extensions['publisher']
 
